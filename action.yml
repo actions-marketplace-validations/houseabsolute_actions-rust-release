@@ -96,11 +96,11 @@ runs:
       run: |
         validate-inputs.py "${{ github.workspace }}"
       env:
-        INPUTS_executable_name: ${{ inputs.executable_name }}
+        INPUTS_executable_name: ${{ inputs.executable-name }}
         INPUTS_release_tag_prefix: ${{ inputs.release-tag-prefix }}
         INPUTS_target: ${{ inputs.target }}
         INPUTS_archive_name: ${{ inputs.archive-name }}
-        INPUTS_extra-files: ${{ inputs.extra-files }}
+        INPUTS_extra_files: ${{ inputs.extra-files }}
         INPUTS_changes_file: ${{ inputs.changes-file }}
         INPUTS_working_directory: ${{ inputs.working-directory }}
         INPUTS_action_gh_release_parameters: ${{ inputs.action-gh-release-parameters }}
@@ -147,7 +147,7 @@ runs:
 
     - name: Publish release artifact for run
       id: publish-release-artifact
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.package-archive.outputs.archive-file }}
         path: ${{ inputs.working-directory }}/${{ steps.package-archive.outputs.archive-file }}*
@@ -182,7 +182,7 @@ runs:
         inputs._force-release-for-testing
 
     - name: Publish GitHub release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with: ${{ steps.action-gh-release-parameters.outputs }}
       if:
         ( github.ref_type == 'tag' && startsWith( github.ref_name, inputs.release-tag-prefix ) ) ||

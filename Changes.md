@@ -1,9 +1,33 @@
-## 0.0.7 2026-03-15
+## 0.0.9 - 2026-07-26
+
+- The input validation step passed `inputs.executable_name` instead of `inputs.executable-name`, so
+  the `executable-name` value never reached the validator and the check that it was set could never
+  fire. Similarly, the `extra-files` value was passed in an environment variable named
+  `INPUTS_extra-files`, which the validator never looked at, so `extra-files` was never validated.
+- The validator checked whether inputs were _present_ rather than whether they had a value. Since
+  the action always sets every one of these environment variables, even for inputs the caller
+  omitted, none of those checks could ever fail. They now check the value.
+- The validation of the `extra-files` input resolved relative paths against the repo root, but the
+  packaging step resolves them against the `working-directory` input. With a `working-directory`
+  other than `.`, this meant validation checked different files than were actually packaged, so it
+  could reject files that exist or accept files that don't. Relative `extra-files` paths are now
+  resolved against the working directory, matching the packaging step.
+- The `extra-files` input is documented as accepting globs, and validation accepted them, but the
+  packaging step passed each line through as a literal path. Passing a glob would pass validation
+  and then fail the release with a `FileNotFoundError`. Globs in `extra-files` are now expanded when
+  packaging.
+
+## 0.0.8 - 2026-06-21
+
+- Update all actions used by this action to get rid of Node.js deprecation warnings. GH #19.
+  Reported by @simonhollingshead (Simon Hollingshead).
+
+## 0.0.7 - 2026-03-15
 
 - Updated various actions used by this action so that it no longer triggers warnings about Node.js
   20 deprecation.
 
-## 0.0.6 2025-02-15
+## 0.0.6 - 2025-02-15
 
 - Added validation for all input parameters. This should provide better errors when a required
   parameter is missing or a parameter is invalid (like referring to a path which does not exist).

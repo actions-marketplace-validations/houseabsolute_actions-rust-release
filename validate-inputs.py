@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import glob
 import os
 import json
 from pathlib import Path
@@ -51,11 +52,11 @@ class InputValidator:
         validation_errors: List[str] = []
 
         # Check for required executable-name parameter
-        if "executable_name" not in self.inputs:
+        if not self.inputs.get("executable_name"):
             validation_errors.append("'executable-name' is a required parameter")
 
         # Validate that either target or archive-name is present
-        if "target" not in self.inputs and "archive_name" not in self.inputs:
+        if not self.inputs.get("target") and not self.inputs.get("archive_name"):
             validation_errors.append(
                 "Either 'target' or 'archive-name' must be provided"
             )
@@ -73,34 +74,40 @@ class InputValidator:
         if not path.is_absolute():
             path = self.repo_root / path
 
+        working_dir_is_valid = True
         if not path.exists():
+            working_dir_is_valid = False
             validation_errors.append(
                 f"'working-directory' does not exist: {working_dir}"
             )
         elif not path.is_dir():
+            working_dir_is_valid = False
             validation_errors.append(
                 f"'working-directory' is not a directory: {working_dir}"
             )
 
-        # Validate changes file exists and is a file if this was set.
-        changes_file = self.inputs.get("changes_file")
-        if changes_file:
-            changes_path = path / changes_file
-            if not changes_path.exists():
-                validation_errors.append(
-                    f"Changes file '{changes_file}' not found in working directory"
-                )
-            elif not changes_path.is_file():
-                validation_errors.append(
-                    f"Changes file '{changes_file}' exists but is not a regular file"
-                )
+        # Everything below resolves relative paths against the working directory, the same way
+        # make-archive.py does, so there's nothing useful to say if that directory is bogus.
+        if working_dir_is_valid:
+            # Validate changes file exists and is a file if this was set.
+            changes_file = self.inputs.get("changes_file")
+            if changes_file:
+                changes_path = path / changes_file
+                if not changes_path.exists():
+                    validation_errors.append(
+                        f"Changes file '{changes_file}' not found in working directory"
+                    )
+                elif not changes_path.is_file():
+                    validation_errors.append(
+                        f"Changes file '{changes_file}' exists but is not a regular file"
+                    )
 
-        # Validate extra-files if present
-        if "extra_files" in self.inputs:
-            validation_errors.extend(self.validate_extra_files())
+            # Validate extra-files if present
+            if self.inputs.get("extra_files"):
+                validation_errors.extend(self.validate_extra_files(path))
 
         # Validate action-gh-release-parameters JSON if present
-        if "action_gh_release_parameters" in self.inputs:
+        if self.inputs.get("action_gh_release_parameters"):
             try:
                 json.loads(self.inputs["action_gh_release_parameters"])
             except json.JSONDecodeError:
@@ -110,23 +117,38 @@ class InputValidator:
 
         return validation_errors
 
-    def validate_extra_files(self) -> List[str]:
+    def validate_extra_files(self, working_dir: Path) -> List[str]:
+        """
+        Validate the extra-files input.
+
+        Args:
+            working_dir: The resolved working directory. Relative paths are resolved against
+                this, because that's what make-archive.py does when it packages them.
+        """
         validation_errors: List[str] = []
 
         extra_files = self.inputs["extra_files"].strip()
         if extra_files:
-            files = [f.strip() for f in extra_files.split("\n")]
-            if not files:
-                validation_errors.append("'extra-files' is empty")
+            files = [f.strip() for f in extra_files.splitlines()]
             for file_path in files:
                 # Empty lines are okay.
                 if file_path:
                     path = Path(file_path)
                     if not path.is_absolute():
-                        path = self.repo_root / path
+                        path = working_dir / path
 
-                    if "*" in path.name:
-                        matches = list(path.parent.glob(path.name))
+                    # Note that the "*" test, and the globbing itself, have to match what
+                    # make-archive.py does, or we will accept things it cannot package. It globs
+                    # the entry as given after chdir'ing to the working directory, so we glob with
+                    # the working directory as the root, not by joining paths. Otherwise a
+                    # workspace path containing something like "[" would change how we match.
+                    if "*" in file_path:
+                        # An absolute pattern ignores root_dir, and matches for a relative one
+                        # come back relative to it.
+                        matches = [
+                            working_dir / m
+                            for m in glob.glob(file_path, root_dir=working_dir)
+                        ]
                         if not matches:
                             validation_errors.append(
                                 f"Extra file '{file_path}' does not match any paths"
@@ -213,6 +235,22 @@ class TestInputValidator(unittest.TestCase):
         errors = validator.validate()
         self.assertTrue(any("executable-name" in error for error in errors))
 
+    def test_validate_empty_executable_name(self) -> None:
+        """An empty value is as good as missing - the action always sets the env var."""
+        self.setup_env(
+            {
+                "executable-name": "",
+                "target": "",
+                "archive-name": "",
+                "extra-files": "",
+                "working-directory": self.temp_dir,
+            }
+        )
+        validator = InputValidator(self.temp_dir)
+        errors = validator.validate()
+        self.assertTrue(any("executable-name" in error for error in errors))
+        self.assertTrue(any("archive-name" in error for error in errors))
+
     def test_validate_missing_target_and_archive_name(self) -> None:
         """Test validation with missing target and archive-name."""
         self.setup_env(
@@ -247,6 +285,32 @@ class TestInputValidator(unittest.TestCase):
         validator = InputValidator(self.temp_dir)
         errors = validator.validate()
         self.assertTrue(any("does not exist" in error for error in errors))
+
+    def test_validate_extra_files_in_working_directory(self) -> None:
+        """Extra files are resolved from the working directory, like make-archive.py does."""
+        self.create_directory("sub")
+        self.create_file("sub/extra.txt", "extra")
+        self.create_file("sub/README.md", "readme")
+        inputs = {
+            "executable-name": "my-app",
+            "target": "x86_64-unknown-linux-gnu",
+            "working-directory": "sub",
+        }
+
+        self.create_file("sub/docs/guide.txt", "guide")
+        self.setup_env({**inputs, "extra-files": "extra.txt\nREADME*\ndo*/guide.txt"})
+        self.assertFalse(InputValidator(self.temp_dir).validate())
+
+        # A file that only exists at the repo root is not visible from the working directory.
+        self.create_file("root-only.txt", "root")
+        self.setup_env({**inputs, "extra-files": "root-only.txt"})
+        errors = InputValidator(self.temp_dir).validate()
+        self.assertTrue(any("does not exist" in error for error in errors))
+
+        # A glob is only checked against the working directory too.
+        self.setup_env({**inputs, "extra-files": "root-only*"})
+        errors = InputValidator(self.temp_dir).validate()
+        self.assertTrue(any("does not match any paths" in error for error in errors))
 
     def test_validate_changes_file(self) -> None:
         """Test validation of changes file."""
